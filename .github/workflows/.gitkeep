@@ -1,0 +1,10 @@
+# GitHub Actions workflows go here
+#
+# Candidates should create:
+# - ci-cd.yml: Main CI/CD pipeline
+#
+# The workflow should:
+# 1. Build Docker images
+# 2. Run tests
+# 3. Push to container registry
+# 4. Deploy to Kubernetes
