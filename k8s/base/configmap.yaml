@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devops-challenge-config
+  namespace: devops-challenge
+data:
+  PORT_GATEWAY: "3000"
+  PORT_USER_SERVICE: "3001"
+  USER_SERVICE_URL: "http://user-service:3001"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"

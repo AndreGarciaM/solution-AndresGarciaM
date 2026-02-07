@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: api-gateway
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          env:
+            - name: LOG_LEVEL
+              value: warn
+            - name: NODE_ENV
+              value: production
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: user-service
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          env:
+            - name: LOG_LEVEL
+              value: warn
+            - name: NODE_ENV
+              value: production
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+spec:
+  minReplicas: 3
+  maxReplicas: 10
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: user-service
+spec:
+  minReplicas: 3
+  maxReplicas: 10
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devops-challenge-config
+data:
+  LOG_LEVEL: warn
+  NODE_ENV: production

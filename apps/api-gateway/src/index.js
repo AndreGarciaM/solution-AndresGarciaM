@@ -5,13 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const USER_SERVICE_URL = process.env.USER_SERVICE_URL || 'http://localhost:3001';
 
-// TODO: Implement structured JSON logging (e.g., winston, pino)
-// All logs should include: timestamp, level, message, and request context
-
 app.use(express.json());
-
-// TODO: Add request logging middleware
-// Should log: method, path, status code, response time in ms
 
 // Health check endpoints
 app.get('/health', (req, res) => {
@@ -33,9 +27,6 @@ app.get('/health/ready', async (req, res) => {
     });
   }
 });
-
-// TODO: Add /metrics endpoint for Prometheus
-// Hint: Use prom-client library to expose default and custom metrics
 
 // Proxy to User Service
 app.get('/api/users', async (req, res) => {
@@ -95,15 +86,31 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// TODO: Implement graceful shutdown
-// The process should handle SIGTERM and SIGINT signals to:
-// 1. Stop accepting new connections
-// 2. Finish processing in-flight requests
-// 3. Close connections to downstream services
-// 4. Exit cleanly
-
 const server = app.listen(PORT, () => {
   console.log(`API Gateway started on port ${PORT}`);
 });
+
+const SHUTDOWN_TIMEOUT_MS = 30000;
+
+function handleGracefulShutdown(signal) {
+  console.log(`Received ${signal}. Starting graceful shutdown...`);
+
+  server.close((err) => {
+    if (err) {
+      console.error('Error during server close:', err.message);
+      process.exit(1);
+    }
+    console.log('HTTP server closed successfully');
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    console.error('Forced shutdown: timeout exceeded');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
 module.exports = { app, server };

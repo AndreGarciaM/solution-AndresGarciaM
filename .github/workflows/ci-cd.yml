@@ -1,0 +1,144 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+
+env:
+  DOCKER_REGISTRY: ${{ secrets.DOCKERHUB_USERNAME }}
+  K8S_NAMESPACE: devops-challenge
+  ROLLOUT_TIMEOUT: 300s
+
+jobs:
+  test:
+    name: Test and Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, user-service]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/${{ matrix.service }}
+        run: npm ci
+
+      - name: Run linter
+        working-directory: apps/${{ matrix.service }}
+        run: npm run lint --if-present
+
+      - name: Run tests
+        working-directory: apps/${{ matrix.service }}
+        run: npm test
+
+  build-and-push:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        include:
+          - service: api-gateway
+            image: api-gateway
+          - service: user-service
+            image: user-service
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push'
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      status: ${{ steps.deploy.outcome }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: set-env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Deploy with Kustomize
+        id: deploy
+        run: |
+          cd k8s/overlays/${{ steps.set-env.outputs.environment }}
+          kustomize edit set image \
+            devops-challenge/api-gateway=${{ env.DOCKER_REGISTRY }}/api-gateway:${{ github.sha }} \
+            devops-challenge/user-service=${{ env.DOCKER_REGISTRY }}/user-service:${{ github.sha }}
+          kubectl apply -k .
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/api-gateway -n ${{ env.K8S_NAMESPACE }} --timeout=${{ env.ROLLOUT_TIMEOUT }}
+          kubectl rollout status deployment/user-service -n ${{ env.K8S_NAMESPACE }} --timeout=${{ env.ROLLOUT_TIMEOUT }}
+
+  notify:
+    name: Notify Status
+    runs-on: ubuntu-latest
+    needs: [test, build-and-push, deploy]
+    if: always() && github.event_name == 'push'
+    steps:
+      - name: Deployment summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Deployment Summary
+
+          | Field | Value |
+          |-------|-------|
+          | Status | ${{ needs.deploy.result }} |
+          | Environment | ${{ needs.deploy.outputs.environment }} |
+          | Branch | ${{ github.ref_name }} |
+          | Commit | ${{ github.sha }} |
+          | Author | ${{ github.actor }} |
+          EOF

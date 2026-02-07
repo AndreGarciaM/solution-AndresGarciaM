@@ -5,9 +5,6 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// TODO: Implement structured JSON logging (e.g., winston, pino)
-// All logs should include: timestamp, level, message, and relevant context
-
 // Redis connection
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
@@ -20,8 +17,6 @@ redis.on('connect', () => console.log('Connected to Redis'));
 redis.on('error', (err) => console.error('Redis error:', err.message));
 
 app.use(express.json());
-
-// TODO: Add request logging middleware
 
 // Health check endpoints
 app.get('/health', (req, res) => {
@@ -43,8 +38,6 @@ app.get('/health/ready', async (req, res) => {
     });
   }
 });
-
-// TODO: Add /metrics endpoint for Prometheus
 
 const USERS_KEY = 'users';
 
@@ -125,7 +118,7 @@ app.post('/users', async (req, res) => {
     users.push(newUser);
     await redis.set(USERS_KEY, JSON.stringify(users));
 
-    console.log('User created:', newUser.id);
+    console.log('User created successfully');
     res.status(201).json(newUser);
   } catch (error) {
     console.error('Failed to create user:', error.message);
@@ -147,7 +140,7 @@ app.delete('/users/:id', async (req, res) => {
     users.splice(index, 1);
     await redis.set(USERS_KEY, JSON.stringify(users));
 
-    console.log('User deleted:', req.params.id);
+    console.log('User deleted successfully');
     res.status(204).send();
   } catch (error) {
     console.error('Failed to delete user:', error.message);
@@ -166,12 +159,42 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// TODO: Implement graceful shutdown
-// Handle SIGTERM/SIGINT: close server, disconnect Redis, exit cleanly
+let server;
+const SHUTDOWN_TIMEOUT_MS = 30000;
+
+async function handleGracefulShutdown(signal) {
+  console.log(`Received ${signal}. Starting graceful shutdown...`);
+
+  if (server) {
+    server.close(async (err) => {
+      if (err) {
+        console.error('Error during server close:', err.message);
+      }
+      console.log('HTTP server closed');
+
+      try {
+        await redis.quit();
+        console.log('Redis connection closed');
+      } catch (redisErr) {
+        console.error('Error closing Redis:', redisErr.message);
+      }
+
+      process.exit(err ? 1 : 0);
+    });
+  }
+
+  setTimeout(() => {
+    console.error('Forced shutdown: timeout exceeded');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
 const start = async () => {
   await initializeData();
-  const server = app.listen(PORT, () => {
+  server = app.listen(PORT, () => {
     console.log(`User Service started on port ${PORT}`);
   });
   return server;

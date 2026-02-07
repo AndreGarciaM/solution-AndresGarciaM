@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: api-gateway
+          image: devops-challenge/api-gateway:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: devops-challenge-config
+                  key: PORT_GATEWAY
+            - name: USER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: devops-challenge-config
+                  key: USER_SERVICE_URL
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: devops-challenge-config
+                  key: LOG_LEVEL
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: devops-challenge-config
+                  key: NODE_ENV
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3000
