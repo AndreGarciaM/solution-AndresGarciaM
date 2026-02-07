@@ -1,11 +1,39 @@
 const express = require('express');
 const Redis = require('ioredis');
 const { v4: uuidv4 } = require('uuid');
+const promClient = require('prom-client');
+const winston = require('winston');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Redis connection
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.json(),
+  defaultMeta: { service: 'user-service', environment: process.env.NODE_ENV || 'development' },
+  transports: [
+    new winston.transports.Console()
+  ]
+});
+
+const register = new promClient.Registry();
+promClient.collectDefaultMetrics({ register });
+
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status'],
+  registers: [register]
+});
+
+const httpRequestDuration = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status'],
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [register]
+});
+
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -13,12 +41,37 @@ const redis = new Redis({
   lazyConnect: true
 });
 
-redis.on('connect', () => console.log('Connected to Redis'));
-redis.on('error', (err) => console.error('Redis error:', err.message));
+redis.on('connect', () => logger.info('Connected to Redis'));
+redis.on('error', (err) => logger.error('Redis error', { errorType: err.constructor.name }));
 
 app.use(express.json());
 
-// Health check endpoints
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = (Date.now() - start) / 1000;
+    const route = req.route ? req.route.path : req.path;
+    const labels = { method: req.method, route, status: res.statusCode };
+
+    httpRequestsTotal.inc(labels);
+    httpRequestDuration.observe(labels, duration);
+
+    logger.info('HTTP request', {
+      method: req.method,
+      route,
+      status: res.statusCode,
+      duration: `${duration.toFixed(3)}s`,
+      timestamp: new Date().toISOString()
+    });
+  });
+  next();
+});
+
+app.get('/metrics', async (req, res) => {
+  res.setHeader('Content-Type', register.contentType);
+  res.send(await register.metrics());
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', service: 'user-service', timestamp: new Date().toISOString() });
 });
@@ -41,7 +94,6 @@ app.get('/health/ready', async (req, res) => {
 
 const USERS_KEY = 'users';
 
-// Initialize sample data
 const initializeData = async () => {
   try {
     await redis.connect();
@@ -53,26 +105,24 @@ const initializeData = async () => {
         { id: uuidv4(), name: 'Bob Wilson', email: 'bob@example.com', role: 'user', createdAt: new Date().toISOString() }
       ];
       await redis.set(USERS_KEY, JSON.stringify(sampleUsers));
-      console.log('Sample data initialized');
+      logger.info('Sample data initialized');
     }
   } catch (error) {
-    console.warn('Could not initialize Redis data:', error.message);
+    logger.warn('Could not initialize Redis data', { errorType: error.constructor.name });
   }
 };
 
-// Get all users
 app.get('/users', async (req, res) => {
   try {
     const data = await redis.get(USERS_KEY);
     const users = data ? JSON.parse(data) : [];
     res.json({ data: users, total: users.length });
   } catch (error) {
-    console.error('Failed to get users:', error.message);
+    logger.error('Failed to get users', { errorType: error.constructor.name });
     res.status(500).json({ error: 'Failed to retrieve users' });
   }
 });
 
-// Get user by ID
 app.get('/users/:id', async (req, res) => {
   try {
     const data = await redis.get(USERS_KEY);
@@ -85,12 +135,11 @@ app.get('/users/:id', async (req, res) => {
 
     res.json(user);
   } catch (error) {
-    console.error('Failed to get user:', error.message);
+    logger.error('Failed to get user', { errorType: error.constructor.name });
     res.status(500).json({ error: 'Failed to retrieve user' });
   }
 });
 
-// Create user
 app.post('/users', async (req, res) => {
   try {
     const { name, email, role } = req.body;
@@ -102,7 +151,6 @@ app.post('/users', async (req, res) => {
     const data = await redis.get(USERS_KEY);
     const users = data ? JSON.parse(data) : [];
 
-    // Check for duplicate email
     if (users.find(u => u.email === email)) {
       return res.status(409).json({ error: 'Email already exists' });
     }
@@ -118,15 +166,13 @@ app.post('/users', async (req, res) => {
     users.push(newUser);
     await redis.set(USERS_KEY, JSON.stringify(users));
 
-    console.log('User created successfully');
     res.status(201).json(newUser);
   } catch (error) {
-    console.error('Failed to create user:', error.message);
+    logger.error('Failed to create user', { errorType: error.constructor.name });
     res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
-// Delete user
 app.delete('/users/:id', async (req, res) => {
   try {
     const data = await redis.get(USERS_KEY);
@@ -140,22 +186,19 @@ app.delete('/users/:id', async (req, res) => {
     users.splice(index, 1);
     await redis.set(USERS_KEY, JSON.stringify(users));
 
-    console.log('User deleted successfully');
     res.status(204).send();
   } catch (error) {
-    console.error('Failed to delete user:', error.message);
+    logger.error('Failed to delete user', { errorType: error.constructor.name });
     res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-// Error handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err.message);
+  logger.error('Unhandled error', { errorType: err.constructor.name });
   res.status(500).json({ error: 'Internal server error' });
 });
 
@@ -163,20 +206,20 @@ let server;
 const SHUTDOWN_TIMEOUT_MS = 30000;
 
 async function handleGracefulShutdown(signal) {
-  console.log(`Received ${signal}. Starting graceful shutdown...`);
+  logger.info('Starting graceful shutdown', { signal });
 
   if (server) {
     server.close(async (err) => {
       if (err) {
-        console.error('Error during server close:', err.message);
+        logger.error('Error during server close', { errorType: err.constructor.name });
       }
-      console.log('HTTP server closed');
+      logger.info('HTTP server closed');
 
       try {
         await redis.quit();
-        console.log('Redis connection closed');
+        logger.info('Redis connection closed');
       } catch (redisErr) {
-        console.error('Error closing Redis:', redisErr.message);
+        logger.error('Error closing Redis', { errorType: redisErr.constructor.name });
       }
 
       process.exit(err ? 1 : 0);
@@ -184,7 +227,7 @@ async function handleGracefulShutdown(signal) {
   }
 
   setTimeout(() => {
-    console.error('Forced shutdown: timeout exceeded');
+    logger.error('Forced shutdown: timeout exceeded');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
 }
@@ -195,7 +238,7 @@ process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
 const start = async () => {
   await initializeData();
   server = app.listen(PORT, () => {
-    console.log(`User Service started on port ${PORT}`);
+    logger.info('User Service started', { port: PORT });
   });
   return server;
 };

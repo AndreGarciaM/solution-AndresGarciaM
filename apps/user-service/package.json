@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test src/**/*.test.js",
+    "test": "node --test src/index.test.js",
     "lint": "echo 'Add your linter here'"
   },
   "dependencies": {
