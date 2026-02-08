@@ -55,10 +55,89 @@ jobs:
         working-directory: apps/${{ matrix.service }}
         run: npm test
 
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run integration tests
+        run: |
+          docker-compose up -d --build
+
+          echo "Waiting for services to be healthy (max 60 seconds)..."
+          TIMEOUT=60
+          ELAPSED=0
+          INTERVAL=5
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            GATEWAY_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker-compose ps -q api-gateway) 2>/dev/null || echo "starting")
+            USER_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker-compose ps -q user-service) 2>/dev/null || echo "starting")
+            REDIS_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $(docker-compose ps -q redis) 2>/dev/null || echo "starting")
+
+            if [ "$GATEWAY_HEALTH" = "healthy" ] && [ "$USER_HEALTH" = "healthy" ] && [ "$REDIS_HEALTH" = "healthy" ]; then
+              echo "All services are healthy"
+              break
+            fi
+
+            echo "Waiting for services... gateway:$GATEWAY_HEALTH user:$USER_HEALTH redis:$REDIS_HEALTH"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "Services failed to become healthy within $TIMEOUT seconds"
+            docker-compose ps
+            docker-compose logs
+            exit 1
+          fi
+
+          echo "Running endpoint tests..."
+
+          echo "Testing GET /health"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "GET /health failed with status $STATUS"
+            exit 1
+          fi
+          echo "GET /health: OK (200)"
+
+          echo "Testing GET /metrics"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/metrics)
+          if [ "$STATUS" != "200" ]; then
+            echo "GET /metrics failed with status $STATUS"
+            exit 1
+          fi
+          echo "GET /metrics: OK (200)"
+
+          echo "Testing GET /api/users"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/users)
+          if [ "$STATUS" != "200" ]; then
+            echo "GET /api/users failed with status $STATUS"
+            exit 1
+          fi
+          echo "GET /api/users: OK (200)"
+
+          echo "Testing POST /api/users"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/api/users -H "Content-Type: application/json" -d '{"name":"test","email":"test@example.com"}')
+          if [ "$STATUS" != "201" ]; then
+            echo "POST /api/users failed with status $STATUS"
+            exit 1
+          fi
+          echo "POST /api/users: OK (201)"
+
+          echo "All integration tests passed"
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose down -v
+
   build-and-push:
     name: Build and Push
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, integration-test]
     if: github.event_name == 'push'
     strategy:
       matrix:
@@ -85,14 +164,36 @@ jobs:
         with:
           context: apps/${{ matrix.service }}
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.ref_name }}-${{ github.run_number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        include:
+          - service: api-gateway
+            image: api-gateway
+          - service: user-service
+            image: user-service
+    steps:
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
 
   deploy:
     name: Deploy to Kubernetes
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: [build-and-push, security-scan]
     if: github.event_name == 'push'
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
@@ -136,7 +237,7 @@ jobs:
   notify:
     name: Notify Status
     runs-on: ubuntu-latest
-    needs: [test, build-and-push, deploy]
+    needs: [test, build-and-push, security-scan, deploy]
     if: always() && github.event_name == 'push'
     steps:
       - name: Deployment summary

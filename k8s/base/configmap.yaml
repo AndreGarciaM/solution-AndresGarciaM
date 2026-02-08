@@ -2,7 +2,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: devops-challenge-config
-  namespace: devops-challenge
 data:
   PORT_GATEWAY: "3000"
   PORT_USER_SERVICE: "3001"

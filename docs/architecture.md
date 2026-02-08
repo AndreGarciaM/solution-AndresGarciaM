@@ -14,7 +14,7 @@
    (egress: user-svc)      (egress: redis)        (egress: none)
 ```
 
-## Your Decisions
+## Design Decisions
 
 ### Docker Strategy
 
@@ -77,6 +77,13 @@ Implementation: Secrets are never committed to Git. CI/CD pipeline injects secre
    - Decision: Zero-trust model with explicit allow rules
    - Rationale: Defense in depth, limits blast radius
    - Alternative considered: Allow-all (rejected for security)
+
+4. **Trade-off: Redis without persistent storage (no PVC)**
+   - Decision: Redis deployed without PersistentVolumeClaim — data lives only in memory
+   - Rationale: User data in this challenge is sample/seed data re-created on startup via `initializeData()`. Persistence would add operational complexity (PVC provisioning, backup strategy, StorageClass dependency) without benefit for ephemeral demo data
+   - Risk: Pod restart or eviction loses all Redis data
+   - Mitigation: Application re-seeds sample data on startup when the `users` key is absent
+   - Alternative considered: PVC with ReadWriteOnce (rejected — adds infra dependency for throwaway data)
 
 ## Security Considerations
 
